@@ -1,0 +1,140 @@
+---
+title: "Fig 4. Tissue-specific ceRNA interaction network."
+author: "Liang Huang"
+date: "`r Sys.Date()`"
+output: html_document
+---
+(a)ceRNA network of each tissue. Non-coding mRNA are arranged in circular pattern, protein coding mRNA are arranged in square pattern.
+```{r setup, include=FALSE}
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/ceRNA/")
+library(dplyr)
+library(igraph)
+library(tidyr)
+library(psych)
+library(tidygraph)
+library(patchwork)
+library(ggraph)
+library(ggplot2)
+
+
+cluster_df=read.csv("./cluster_genes_wide.csv",row.names = 1)
+data=read.csv("../mRNA_rpkm_symbol.csv",row.names = 1)
+data=data[rownames(data) %in% unique(cluster_df$gene),]
+
+anno=read.csv("../annotation.csv",row.names = 1)
+anno=anno[!duplicated(anno$external_gene_name),]
+anno=anno[,2:3]
+anno$gene_biotype=gsub("protein_coding","mRNA",anno$gene_biotype)
+cor_cal=function(x){
+  cor_matrix <- cor(x, use =  "pairwise.complete.obs",method =  "spearman")
+  n <- t(!is.na(x)) %*% (!is.na(x))
+  
+  t_matrix <- cor_matrix * sqrt((n - 2) / (1 - cor_matrix^2))
+  
+  p_matrix <- 2 * pt(-abs(t_matrix), df = n - 2)
+  
+  list(cor = cor_matrix, 
+       p_value = p_matrix,
+       n_obs = n)
+}
+tissue_clu=data.frame(tissue=c("colon","liver","jejunum","heart","lung","kidney"),
+                      cluster=c(2,5,4,6,3,1))
+tcolor=c( "colon" = "#FF6B6B", 
+         "heart" = "#4ECDC4",
+         "jejunum" = "#45B7D1",
+         "kidney" = "#96CEB4",
+         "liver" = "#FFEEAD",
+         "lung" = "#D4A5A5")
+AV=data.frame()
+all_net=data.frame()
+for (i in c(2,5,4,6,3,1)){
+  temp_data=data[rownames(data) %in% cluster_df$gene[cluster_df$cluster==i],]
+  tissue=tissue_clu$tissue[tissue_clu$cluster==i]
+  Ver=data.frame()
+  EDGE=data.frame()
+  net=data.frame()
+  for (condition in c("GF","FMT","SPF")){
+    temp_data2=temp_data[,grep(condition,names(temp_data))]
+    temp_data2=data.frame(t(temp_data2))
+    res=cor_cal(temp_data2)
+    
+    cor_df=as.data.frame(res$cor)
+    cor_df[upper.tri(cor_df)]=0
+    pvalue_df=as.data.frame(res$p_value)
+    pvalue_df[upper.tri(pvalue_df)]=0
+    
+    cor_df$gene1=rownames(cor_df)
+    pvalue_df$gene1=rownames(pvalue_df)
+    
+    long_cor=pivot_longer(cor_df,cols = names(cor_df)[-length(cor_df)],names_to = "gene2",values_to = "cor")
+    long_pvalue=pivot_longer(pvalue_df,cols = names(pvalue_df)[-length(pvalue_df)],names_to = "gene2",values_to = "pvalue")
+    df <- data.frame(long_cor,pvalue=long_pvalue$pvalue)
+    df=df[df$cor>0.4 & df$pvalue<0.05 & df$gene1 != df$gene2,]
+    
+    names(anno)=c("gene1","gene1_type")
+    df=left_join(df,anno,by="gene1")
+    names(anno)=c("gene2","gene2_type")
+    df=left_join(df,anno,by="gene2")
+    names(anno)=c("name","type")
+    
+    df=df[df$gene1_type != df$gene2_type,]
+    df=na.omit(df)
+    df$condition=condition
+    edges<-data.frame(from=df$gene1,
+                      to=df$gene2,
+                      condition=condition)
+    edges <- edges[!duplicated(t(apply(edges[, 1:2], 1, sort))), ]
+    
+    all_nodes <- unique(c(edges$from, edges$to))
+    vertices <- data.frame(
+      name = all_nodes,
+      condition = condition
+    )
+    
+    degree_count <- table(c(edges$from, edges$to))
+    vertices$degree <- as.numeric(degree_count[match(vertices$name, names(degree_count))])
+    
+    vertices <- left_join(vertices, anno, by = "name")
+    
+    EDGE <- rbind(EDGE, edges)
+    Ver <- rbind(Ver, vertices)
+    net=rbind(net,df)
+  }
+  
+  Ver$node_id <- paste(Ver$name, Ver$condition, sep = "|")
+  Ver$tissue=tissue
+  AV=rbind(AV,Ver)
+  all_net=rbind(all_net,net)
+  write.csv(all_net,"./network.csv")
+}
+```
+
+(b) Intensity of non-coding mRNA’s degree in each tissue.
+```{r setup, include=FALSE}
+df=AV[AV$type !="mRNA",]
+pdf("./density.pdf",width = 18/2.53,height = 4/2.53)
+df$tissue=factor(df$tissue,levels = c("colon","liver","jejunum","heart","lung","kidney"))
+ggplot(df,aes(degree))+
+  geom_density(aes(color=condition),key_glyph = "path")+
+  scale_color_manual(values = c("#4e62ab","#FF9850", "#d6404e"))+
+  facet_wrap(~tissue,nrow = 1,scales = "free",axes = "all")+
+  theme_minimal(base_size = 8,base_line_size = 0.5)+
+  labs(x="Degree",y="Density")+
+  theme(text=element_text(size = 8),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(colour = "black",linewidth = 0.5),
+        axis.text.x = element_blank(),###若x轴文本旋转，删除本行注释
+        # axis.title = element_blank(),
+        margins = margin(b=0),
+        panel.grid = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        legend.margin = margin(0,0,0,0),
+        plot.title = element_text(hjust = 0.5)
+  )
+dev.off()
+
+
+```
+

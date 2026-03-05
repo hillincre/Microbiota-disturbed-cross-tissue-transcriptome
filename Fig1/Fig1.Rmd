@@ -1,0 +1,382 @@
+---
+title: "Fig 1.Gut microbes disturb multi-tissue transcript."
+author: "Liang Huang"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+(a) Gene expression level (RPKM) distribution of each sample.
+```{r setup, include=FALSE}
+rm (list=ls())
+setwd("")
+data=read.csv("./mRNA_rpkm_symbol.csv",row.names = 1)
+library(dplyr)
+library(tidyr)
+df=data %>%
+  filter(rowSums(data >5)>=5)
+df$gene=rownames(df)
+df=pivot_longer(df,cols = names(df)[-55],names_to = "sample",values_to = "RPKM")
+df$tissue=""
+df$group=""
+for (tissue in c("colon","liver","jejunum","heart","lung","kidney")){
+  df$tissue[grep(tissue,df$sample)]=tissue
+  df$group[grep(tissue,df$sample)]=gsub(tissue,"",df$sample[grep(tissue,df$sample)])
+}
+df$group=gsub("\\d+\\.*","",df$group)
+
+library(ggplot2)
+p1=ggplot(df,aes(sample,log10(RPKM+1),fill=group))+
+  stat_boxplot(geom="errorbar",width=0.3,position = position_dodge())+
+  geom_boxplot(aes(fill=group),outliers = F,width = 0.5,outlier.color = "black",outlier.size = 0.3)+
+  facet_wrap(facets = ~tissue,nrow = 1,scales = "free_x")+
+  scale_fill_manual(values = c("#4e62ab","#FF9850", "#d6404e"))+
+  theme(panel.background = element_blank(), 
+        text = element_text(size=8),
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_blank(),    
+        strip.text = element_text(size = 10),
+        legend.position = "right",legend.title=element_blank())
+
+p1
+ggsave("./rpkm_stasitic.pdf",units = "cm",width = 24,height = 4)
+```
+
+
+(b) PCA of each tissue displayed distance between both three groups.
+```{r setup,include=FALSE}
+library(DESeq2)
+library(ggplot2)
+common_theme <- function() {
+  list(
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(colour = "black", linewidth = 0.5),
+      legend.position = "none",
+      legend.title = element_blank(),
+      plot.title = element_text(size = 10, hjust = 0.5),
+      plot.margin = margin(t = 0, r = 10, b = 0, l = 0, unit = "pt") 
+    ),
+    coord_fixed(ratio = 1) 
+  )
+  }
+setwd("")
+DATA=read.table("./all_mRNA_counts.txt",header = T)
+data=DATA[,7:60]
+rownames(data)=DATA$Geneid
+data=data[rowSums(data)!=0,]
+data=as.data.frame(data)
+data=data[rowSums(data>0)>3,]
+group=read.csv("./group.csv",row.names = 1)
+
+plot=list()
+for (i in c("colon","liver","jejunum","heart","kidney", "lung")){
+  coldata=group[group$tissue==i,]
+  temp_data=data[,colnames(data)%in%rownames(coldata)]
+  coldata$group=factor(coldata$group)
+  coldata$group <- relevel(coldata$group, ref = "GF")
+  dds <- DESeqDataSetFromMatrix(countData = temp_data,
+                                colData = coldata,
+                                design=  ~group)
+  dds <- DESeq(dds)
+  vsd <- vst(dds, blind=FALSE)
+  p=plotPCA(vsd, intgroup=c("group"))+
+    scale_color_manual(values = c("#4e62ab","#FF9850", "#d6404e"))+
+    labs(title = i)+
+    coord_cartesian(expand = F)+
+    common_theme()
+  plot[[i]]=p
+}
+library(patchwork)
+pdf("./PCA_6_tissue.pdf",width = 30/2.53,height = 4/2.53)
+plot[[1]]+plot[[2]]+plot[[3]]+plot[[4]]+plot[[5]]+plot[[6]]+
+  plot_layout(ncol = 6, nrow = 1,guides = "collect")&
+  theme(aspect.ratio = 1,
+        text = element_text(size=8),
+        legend.position = "right")
+dev.off()
+```
+
+
+(c)Heatmap of coding and non-coding mRNA relative expression level.
+```{r setup,include=FALSE}
+rm(list = ls())
+setwd("")
+data=read.csv("./mRNA_rpkm_symbol.csv",row.names = 1)
+group=read.csv("./group.csv",row.names = 1)
+group$group=factor(group$group,levels = c("GF","FMT","SPF"))
+anno=read.csv("./annotation.csv",row.names = 1)
+setwd("./mRNA/second/")
+df_mRNA=data[rownames(data)%in%anno$external_gene_name[anno$gene_biotype=="protein_coding"],]
+df_miRNA=data[rownames(data)%in%anno$external_gene_name[anno$gene_biotype=="miRNA"],]
+df_lncRNA=data[rownames(data)%in%anno$external_gene_name[anno$gene_biotype=="lncRNA"],]
+
+library(RColorBrewer)
+display.brewer.all()
+tis=brewer.pal(6, "Accent")
+names(tis)=unique(group$tissue)
+g=c("#4e62ab","#FF9850", "#d6404e")
+names(g)=unique(group$group)
+color=list(group=g,
+           tissue=tis)
+library(pheatmap)
+hmap=function(df,title){
+  p=pheatmap(df,kmeans_k = 300,
+             scale="row",
+             show_colnames = F,
+             show_rownames = F,
+             annotation_col = group,annotation_colors = color,
+             color = colorRampPalette(colors = c("#112F61","#4393C4","#F8F8F8","#D6604C","#670920"))(11),
+             main = title,fontsize = 8)
+  return(p)
+}
+
+p1=hmap(df_mRNA,"mRNA")
+p2=hmap(df_lncRNA,"lncRNA")
+p3=hmap(df_miRNA,"miRNA")
+
+library(gridExtra)
+pdf("./heatmap_all.pdf",width = 25/2.53,height = 8/2.53)
+grid.arrange(grobs=list(p1$gtable,p2$gtable,p3$gtable),ncol=3)
+dev.off()
+```
+
+# d & Fig S1 Screen DEGs and performed KEGG pathway enrichment.
+(d)Differentially expressed genes (DEGs) counts in each tissue.
+Fig S1. KEGG pathway enrichment of genes disturbed by gut microbes.
+```{r setup,include=FALSE}
+rm(list = ls())
+############input data###############
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物")
+DATA=read.table("./all_mRNA_counts.txt",header = T)
+names(DATA)=gsub("...bam.","",names(DATA))
+names(DATA)=gsub("_Aligned.sortedByCoord.out.bam","",names(DATA))
+
+data=DATA[,7:60]
+rownames(data)=DATA$Geneid
+data=data[rowSums(data)!=0,]
+group=read.csv("./group.csv",row.names = 1)
+
+setwd("./mRNA/")
+###########mapID############
+library(org.Mm.eg.db)
+library(clusterProfiler)
+library(DESeq2)
+library(tidyverse)
+
+genenames=bitr(rownames(data),fromType = "ENSEMBL",OrgDb = org.Mm.eg.db,toType = "SYMBOL")
+genenames=genenames[!duplicated(genenames$ENSEMBL),]
+genenames=genenames[!duplicated(genenames$SYMBOL),]
+data=data[rownames(data)%in%genenames$ENSEMBL,]
+rownames(data)=genenames$SYMBOL[rownames(data)%in%genenames$ENSEMBL]
+data=data[rowSums(data)!=0,]
+write.csv(data,"./mRNA_symbol.csv")
+###############DEGs venn in each tissue##################
+{
+  colData <- group
+  tissues <- unique(colData$tissue)
+  all_results <- list()
+  for (tissue in tissues) {
+    tissue_samples <- rownames(colData[colData$tissue == tissue, ])
+    tissue_data <- data[, tissue_samples]
+    tissue_colData <- colData[tissue_samples, ]
+    dds <- DESeqDataSetFromMatrix(
+      countData = tissue_data,
+      colData = tissue_colData,
+      design = ~ group
+    )
+    keep <- rowSums(counts(dds) >= 10) >= 1
+    dds <- dds[keep, ]
+    dds <- DESeq(dds)
+    comparisons <- list(
+      c("SPF","GF"),
+      c("SPF", "FMT"),
+      c("FMT", "GF")
+    )
+    for (comp in comparisons) {
+      group1 <- comp[1]
+      group2 <- comp[2]
+      res <- results(dds, contrast = c("group", group1, group2))
+      res_df <- as.data.frame(res)
+      res_df$gene <- rownames(res_df)
+      res_df$comparison <- paste(group2, "vs", group1)
+      res_df$tissue <- tissue
+      all_results[[paste(tissue, group2, "vs", group1)]] <- res_df
+    }
+  }
+  final_results <- do.call(rbind, all_results)
+}
+setwd("./second/")
+write.csv(final_results, file = "DEGs_conditions.csv", row.names = FALSE)
+
+################DEGs ###########
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/mRNA/second/")
+rm(list=ls())
+library(dplyr)
+data=read.csv("./DEGs_conditions.csv",header = T)
+DE_data <- data %>%
+  filter(pvalue < 0.05 & abs(log2FoldChange) > 0.2630344)
+
+anno=read.csv("../../annotation.csv",row.names = 1)
+DE_data$genetype=anno$gene_biotype[match(DE_data$gene,anno$external_gene_name)]
+library(ggplot2)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(patchwork)
+{
+DEGs_count=list()
+df_count=data.frame()
+KEGG=data.frame()
+enrich=data.frame()
+plot=list()
+
+ov=data.frame(genes=0,type=0,tissue=0)
+ov=ov[-1,]
+for (tissue in c("colon","liver","jejunum","heart","lung","kidney")){
+  temp_data=DE_data[DE_data$tissue==tissue,]
+  DEG_list=list()
+  ####get DEGs of SPF and FMT
+  for (comparison in c("GF vs SPF","GF vs FMT")){
+    DEG_list[[comparison]]=list(
+      mRNA_up=temp_data$gene[which(temp_data$comparison==comparison & temp_data$genetype=="protein_coding" & temp_data$log2FoldChange > 0)],
+      miRNA_up=temp_data$gene[which(temp_data$comparison==comparison & temp_data$genetype=="miRNA" & temp_data$log2FoldChange >0)],
+      lncRNA_up=temp_data$gene[which(temp_data$comparison==comparison & temp_data$genetype=="lncRNA"& temp_data$log2FoldChange >0)],
+      mRNA_dn=temp_data$gene[which(temp_data$comparison==comparison & temp_data$genetype=="protein_coding"& temp_data$log2FoldChange < 0)],
+      miRNA_dn=temp_data$gene[which(temp_data$comparison==comparison & temp_data$genetype=="miRNA"& temp_data$log2FoldChange < 0)],
+      lncRNA_dn=temp_data$gene[which(temp_data$comparison==comparison & temp_data$genetype=="lncRNA"& temp_data$log2FoldChange < 0)]
+    )
+  }
+  DEG_list[["overlap"]]=list()
+  count=c()
+  ########get overlap DEGs between SPF and FMT
+  for(type in c("mRNA_up","miRNA_up","lncRNA_up","mRNA_dn","miRNA_dn","lncRNA_dn")){
+  overlap=intersect(DEG_list[[1]][[type]],DEG_list[[2]][[type]])
+  DEG_list[["overlap"]][[type]]=overlap
+  if(length(overlap!=0)){
+      temp_ov=data.frame(genes=overlap,type=type,tissue=tissue)
+      ov=rbind(ov,temp_ov)
+    }  
+  count=c(count,
+              count=as.numeric(c(length(DEG_list[[1]][[type]]),
+                length(DEG_list[[2]][[type]]),
+                length(DEG_list[[3]][[type]])
+                )
+              )
+  )
+  }
+  df=data.frame(
+    condition=c(rep(c("SPF","FMT","overlap"),6)),
+    genetype=c(rep(c(rep("mRNA",3),rep("miRNA",3),rep("lncRNA",3)),2)),
+    regulation=c(rep(c(rep("up",3),rep("down",3)),3)),
+    count=count
+    )
+  df$tissue=tissue
+  df_count=rbind(df_count,df)
+  ########kegg############
+  temp_out=data.frame("category"=0,"subcategory"=0, "ID"=0,"Description"=0, "GeneRatio"=0,
+                      "BgRatio"=0,"pvalue"=0,"p.adjust"=0,"qvalue"=0,
+                      "geneID"=0,"Count"=0,"tissue"=0,"reg"=0 )
+  temp_out=temp_out[-1,]
+  for (i in c(1,4)){
+    genes=c(DEG_list[[3]][[i]],DEG_list[[3]][[i+1]],DEG_list[[3]][[i+2]])
+    df=bitr(genes,"SYMBOL","ENTREZID",OrgDb = org.Mm.eg.db)
+    kegg=enrichKEGG(df$ENTREZID,organism = "mmu",
+                    pvalueCutoff = 0.05,
+                    pAdjustMethod = "BH",
+                    qvalueCutoff = 1)
+    OUT=kegg@result
+    OUT=na.omit(OUT)
+    out=OUT
+    if(nrow(out)!=0){
+      out$Description=gsub("\\ - .*","",out$Description)
+      out$tissue=tissue
+      out=out[!duplicated(out$Description),]
+      enrich=rbind(enrich,out)
+      temp=head(out,10)
+      temp=temp[order(temp$p.adjust,decreasing = T),]
+      temp$reg=ifelse(i==1,"up","down")
+      temp_out=rbind(temp_out,temp)
+    }
+  }
+  temp_out=temp_out[!duplicated(temp_out$Description),]
+  temp_out$Description=factor(temp_out$Description,levels = unique(temp_out$Description))
+  p1=ggplot(temp_out, aes(x = -log10(p.adjust), y = Description))+
+    geom_col(aes(fill=reg),alpha=0.3,color="black",width = 0.85)+
+    scale_fill_manual(values = c("up"="#d6404e","down"="#3789D8"))+
+    coord_cartesian(expand = T,clip = "off") +
+    theme(panel.background = element_blank(),
+          text = element_text(size = 8),
+          plot.title=element_text(hjust = 0.5),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.line.x = element_line(),legend.position = "none",
+          plot.margin = margin(t=10,b=10,r = 220,unit = "pt"))+
+    geom_text(aes(label = Description), size = 8,size.unit = "pt",hjust=-0.02,vjust=0.5)+
+    labs(x="-log10 (padj)",y="", title = tissue)
+  p1
+  KEGG=rbind(KEGG,temp_out)
+  plot[[tissue]]=p1
+}
+}
+
+write.csv(ov,"./overlap_genes.csv")
+write.csv(KEGG,"./overlap_KEGG_result.csv")
+library(patchwork)
+pdf("./KEGG_overlap.pdf",width = 36/2.53,height = 18/2.53)
+plot[[1]]+plot[[2]]+plot[[3]]+plot[[4]]+plot[[5]]+plot[[6]]+
+  plot_layout(ncol=3,nrow=2,guides = "collect")&
+  theme(legend.position = "bottom",
+        legend.title=element_blank())
+dev.off()
+
+
+#########DEGs count plot##########
+df_count_bidirectional <- df_count %>%
+  mutate(count = ifelse(regulation == "down", -count, count))
+df_count_bidirectional$tissue=factor(df_count_bidirectional$tissue,levels = c("colon","liver","jejunum","heart","lung","kidney"))
+df_count_bidirectional$condition=factor(df_count_bidirectional$condition,level=c("SPF","FMT","overlap"))
+df_count_bidirectional$genetype=factor(df_count_bidirectional$genetype,level=c("miRNA","lncRNA","mRNA"))
+
+pdf("./DEGs_overlap(none).pdf",width = 21/2.53,height = 6/2.53)
+ggplot(df_count_bidirectional, 
+       aes(x = condition, y = count)) +
+  geom_col(aes(fill = genetype),
+           position = position_dodge(width = 0.7),
+           width = 0.7) +
+  geom_text(aes(label = ifelse(count==0,"",abs(count)),
+                y = ifelse(count > 0, 
+                           count + max(count)*0.02,
+                           count - max(abs(count))*0.02),
+                color=genetype,
+                group = genetype),
+            position = position_dodge(width = 0.7),
+            vjust = ifelse(df_count_bidirectional$count > 0, -0.5, 1.5),
+            size = 6,
+            size.unit = "pt") +
+  geom_text(data = subset(df_count_bidirectional, tissue == "colon"),
+            aes(x = -Inf, y = Inf, label = "up"),
+            hjust = -0.1, vjust = 1.5, color = "black", size = 2) +
+  geom_text(data = subset(df_count_bidirectional, tissue == "colon"),
+            aes(x = -Inf, y = -Inf, label = "down"),
+            hjust = -0.1, vjust = -0.5, color = "black", size = 2) +
+  scale_fill_manual(values = c("#9841A3", "#ff745e", "#3789D8")) +
+  scale_color_manual(values = c("miRNA"="#9841A3","lncRNA" = "#ff745e","mRNA" = "#3789D8")) +
+  labs(x = "", y = "DEGs count (compare to GF)") +
+  theme(
+    text = element_text(size = 8),
+    panel.background = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA),
+    plot.title = element_text(hjust = 0.5, vjust = 3),
+    legend.position = "top", 
+    legend.title = element_blank(),
+    plot.margin = margin(5, 5, 0, 5)
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0.1, 0.1)),
+    limits = c(-max(abs(df_count_bidirectional$count)) * 1.1, 
+               max(abs(df_count_bidirectional$count)) * 1.1),
+    labels = abs
+  ) +
+  geom_hline(yintercept = 0, color = "black") +
+  facet_wrap(vars(tissue), nrow = 1)
+dev.off()
+```

@@ -1,0 +1,394 @@
+---
+title: "Fig 3. Tissue-specific key effect genes and their behavior in tissue cancer."
+author: "Liang Huang"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+(a)a Importance rank of effector genes screened according LASSO model in each tissue, genes were ranked based on mean decrease accuracy according Randomforest model. Top 3 genes in colon, liver, lung and kidney are markered in red color.
+```{r setup, include=FALSE}
+library(randomForest)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+library(viridis)
+library(caret)
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/machine_learning/LASSO")
+lasso_results <- read.csv("lasso_selected_genes_by_tissue.csv")
+
+df <- read.csv("../../mRNA_rpkm_symbol.csv", row.names = 1)
+df <- df %>% filter(rowSums(df > 0) >= 5)
+df <- as.data.frame(t(df))
+
+group <- read.csv("../../group.csv")
+names(group)[1] <- "sample_id"
+names(group)[2] <- "treatment"
+rownames(group) <- group[,1]
+group$mouse_id <- rep(1:9, 6)
+
+df <- cbind(group, df)
+df$treatment[df$treatment %in% c("FMT", "SPF")] <- "NGF"
+
+
+{
+set.seed(123)
+
+if (!dir.exists("RandomForest")) dir.create("RandomForest")
+find_matching_columns <- function(genes, df_columns) {
+  matches <- c()
+  for (gene in genes) {
+    if (gene %in% df_columns) {
+      matches <- c(matches, gene)
+      next
+    }
+    
+    gene_dot <- gsub("-", ".", gene)
+    if (gene_dot %in% df_columns) {
+      matches <- c(matches, gene_dot)
+      next
+    }
+    
+    partial_match <- grep(gene, df_columns, value = TRUE, fixed = TRUE)
+    if (length(partial_match) > 0) {
+      matches <- c(matches, partial_match[1])
+      cat("Partial match found for", gene, "->", partial_match[1], "\n")
+    } else {
+      cat("No match found for gene:", gene, "\n")
+    }
+  }
+  return(unique(matches))
+}
+
+all_importance <- list()
+res=data.frame(Gene="",Importance ="",Tissue="")
+res=res[-1,]
+
+for (tissue in c("colon","liver","jejunum","heart","lung","kidney")) {
+  cat("Processing tissue:", tissue, "\n")
+  
+  tissue_genes <- lasso_results$Gene[lasso_results$Tissue == tissue]
+  
+  cat("Checking gene names in data frame...\n")
+  
+  valid_genes <- find_matching_columns(tissue_genes, colnames(df))
+  
+  if (length(valid_genes) == 0) {
+    cat("No valid genes found for", tissue, "- skipping\n")
+    next
+  }
+  
+  cat("Found", length(valid_genes), "valid genes for", tissue, "\n")
+  cat("Genes:", paste(valid_genes, collapse = ", "), "\n")
+  
+  tissue_data <- df %>% 
+    filter(treatment %in% c("GF", "NGF"))
+  
+  selected_cols <- c("treatment", valid_genes)
+  tissue_data <- tissue_data[, colnames(tissue_data) %in% selected_cols]
+  
+  if (ncol(tissue_data) < 2) {
+    cat("Skipping", tissue, "- insufficient features after filtering\n")
+    next
+  }
+  
+  tissue_data$treatment <- as.factor(tissue_data$treatment)
+    try({
+      x <- as.matrix(tissue_data[, -which(colnames(tissue_data) == "treatment")])
+      y <- tissue_data$treatment
+      
+      rf_model <- randomForest(
+        x = x,
+        y = y,
+        ntree = 500,
+        importance = TRUE
+      )
+      
+      imp <- importance(rf_model, type = 1)
+      
+      if (!is.null(rownames(imp))) {
+        imp_df <- data.frame(
+          Gene = rownames(imp),
+          Importance = imp[, "MeanDecreaseAccuracy"],
+          Tissue = tissue,
+          stringsAsFactors = FALSE
+        )
+        
+        all_importance[[tissue]] <- imp_df
+        imp_df=imp_df[order(imp_df$Importance,decreasing = T),]
+        res=rbind(res,imp_df)
+        
+        tissue_dir <- paste0("RandomForest/", tissue)
+        if (!dir.exists(tissue_dir)) dir.create(tissue_dir)
+        
+        imp_df <- imp_df %>% arrange(desc(Importance))
+        if (nrow(imp_df) > 0) {
+          imp_df$Gene <- factor(imp_df$Gene, levels = imp_df$Gene)
+          
+          p <- ggplot(imp_df, aes(x = Importance, y = reorder(Gene, Importance))) +
+            geom_bar(stat = "identity", fill = "#46aae0", width = 0.7) +
+            labs(title = paste(tissue, "Gene Importance"),
+                 x = "Importance (Mean Decrease Accuracy)",
+                 y = "") +
+            theme_minimal() +
+            theme(
+              panel.grid.major.y = element_blank(),
+              panel.grid.minor = element_blank(),
+              axis.line.y = element_line(color = "black"),
+              plot.title = element_text(hjust = 0.5, size = 10),
+              axis.text = element_text(size = 8)
+            )
+          
+          ggsave(paste0(tissue_dir, "/", tissue, "_importance.pdf"), p, 
+                 width = 12/2.53, height = max(4, nrow(imp_df)*0.3)/2.53)
+        }
+        
+        write.csv(imp_df, paste0(tissue_dir, "/", tissue, "_importance.csv"), row.names = FALSE)
+        cat("Alternative approach successful for", tissue, "\n")
+      }
+    }, silent = TRUE)
+}
+}
+
+write.csv(res,"./RandomForest/importance_result.csv")
+
+res=read.csv("./RandomForest/importance_result.csv",row.names = 1)
+res=res[nrow(res):1,]
+res$Gene=factor(res$Gene,levels = res$Gene)
+res$Tissue=factor(res$Tissue,levels = unique(res$Tissue))
+p <- ggplot(res, aes(x = Gene, y = Importance,fill=Tissue)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_fill_manual(values = c( "colon" = "#FF6B6B", 
+                                "heart" = "#4ECDC4",
+                                "jejunum" = "#45B7D1",
+                                "kidney" = "#96CEB4",
+                                "liver" = "#FFEEAD",
+                                "lung" = "#D4A5A5"))+
+  labs(
+       y = "Mean Decrease Accuracy",
+       x = "") +
+  guides(fill = guide_legend(nrow = 1))+
+  theme(
+    text = element_text(size = 8),
+    panel.background = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line.y = element_line(color = "black"),
+    axis.line.x = element_line(color = "black"),
+    axis.text.x = element_text(angle = 90,hjust = 1,vjust = 0.5),
+    plot.title = element_text(hjust = 0.5, size = 10),
+    legend.position = "top",legend.text = element_text(size = 8),
+    legend.title = element_blank(),
+    legend.key.size = unit(0.3,"cm"),
+    axis.text = element_text(size = 8)
+  )
+p
+ggsave("96_genes_importance.pdf", p,
+        height= 6/2.53, width = 24/2.53)
+```
+
+(b)Expression level of top 3 genes displayed in a way of radar chart.
+```{r setup, include=FALSE}
+rm(list=ls())
+library(tidyverse)
+library(ggradar)
+library(scales)
+library(patchwork)
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/machine_learning/LASSO")
+df <- read.csv("../../mRNA_rpkm_symbol.csv", row.names = 1)
+df <- df %>% filter(rowSums(df > 0) >= 5)
+int=c("NOCT", "MVK", "FOXO3","RORC", "AKR1C19", "GPCPD1","NR1D1", "TRAM2", "CRY1","FKBP5", "NAMPT", "TTLL12")
+int=tolower(int)
+substring(int,1,1)=toupper(substring(int,1,1))
+df=df[rownames(df)%in%int,]
+group <- read.csv("../../group.csv",row.names = 1)
+group_df <- group %>%
+  rownames_to_column("sample") %>%
+  as_tibble()
+
+tidy_data <- df %>%
+  rownames_to_column("gene") %>%
+  pivot_longer(cols = -gene, 
+               names_to = "sample", 
+               values_to = "expression") %>%
+  left_join(group_df, by = "sample") %>%
+  group_by(gene, tissue, group) %>%
+  summarise(mean_expression = mean(expression, na.rm = TRUE), 
+            .groups = "drop") %>%
+  pivot_wider(names_from = tissue, values_from = mean_expression) %>%
+  mutate(group = factor(group, levels = c("FMT", "GF", "SPF")))
+
+create_radar_plot <- function(gene_data) {
+  plot_data <- gene_data %>% select(-gene)
+  
+  scaled_data <- plot_data %>%
+    mutate(across(-group, ~ rescale(.x, to = c(0, 1))))
+  
+  ggradar(
+    scaled_data,
+    values.radar = c("0", "0.5", "1"),
+    grid.min = 0, grid.mid = 0.5, grid.max = 1,
+    grid.label.size = 0,
+    axis.label.size = 3,
+    group.line.width = 0.5,
+    draw.points = F,
+    axis.label.offset = 1.2,
+    fill = T,
+    fill.alpha = 0.3,
+    group.colours = c("GF"="#4e62ab","FMT"="#FF9850", "SPF"="#d6404e"), 
+    background.circle.colour = "white",
+    gridline.mid.colour = "grey70",
+    legend.position = "bottom",
+    plot.title = unique(gene_data$gene),
+    ) +
+    coord_cartesian(expand = T,clip = "off") +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 10),
+      plot.margin = margin(r=30),
+      legend.text = element_text(size = 8),
+      axis.text.y = element_blank()
+    )
+}
+
+
+genes <- int
+tidy_data$group=factor(tidy_data$group,levels = c("GF","FMT","SPF"))
+plots <- map(genes, ~ {
+  gene_data <- filter(tidy_data, gene == .x)
+  create_radar_plot(gene_data)
+})
+
+pdf("./radar.pdf",width = 15/2.53,height = 15/2.53)
+wrap_plots(plots, ncol = 3,guides = "collect") &
+  theme(plot.title = element_text(hjust = 0.5, size = 10),
+                                    legend.position = "bottom",
+                                    plot.margin = margin(t=5,l=20,r=20,b=5),
+                                    legend.key.width = unit(0.5,"cm"))
+dev.off()
+
+
+```
+(c) Survival analysis of top 3 genes. Red represents high expression, while green represents low expression.
+```{r setup, include=FALSE}
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/machine_learning/LASSO")
+library(TCGAbiolinks)
+library(survival)
+library(survminer)
+library(SummarizedExperiment)
+
+GM <- list(
+  'TCGA-COAD' = c("NOCT", "MVK", "FOXO3"),
+  'TCGA-LIHC' = c("RORC", "AKR1C1", "GPCPD1"), 
+  'TCGA-LUAD' = c("NR1D1", "TRAM2", "CRY1"),
+  'TCGA-KIRC' = c("FKBP5", "NAMPT", "TTLL12")
+)
+
+{
+plot=list()
+for (pro in names(GM)){
+  query <- GDCquery(
+    project = pro,
+    data.category = "Transcriptome Profiling",
+    data.type = "Gene Expression Quantification",
+    workflow.type = "STAR - Counts"
+  )
+  
+  GDCdownload(query, method = "api")
+  
+  coad_data <- GDCprepare(
+    query = query,
+    summarizedExperiment = TRUE
+  )
+  
+  gene_list <- GM[[pro]]
+  convert_gene_names <- function(gene_symbols) {
+    gene_map <- select(org.Hs.eg.db, 
+                       keys = gene_symbols, 
+                       columns = c("ENSEMBL"), 
+                       keytype = "SYMBOL")
+    return(gene_map)
+  }
+  gene_mapping <- convert_gene_names(gene_list)
+  plot_list=list()
+  for (temp_gene in gene_list){
+    noct_expr <- assay(coad_data[grep(
+      gene_mapping$ENSEMBL[gene_mapping$SYMBOL==temp_gene],rownames(coad_data)
+    ), ])
+    rownames(noct_expr) <- temp_gene
+    
+    clinical_data <- colData(coad_data)
+    
+    surv_data <- data.frame(
+      patient_barcode = clinical_data$patient,
+      NOCT_expr = as.numeric(noct_expr[1, ]),
+      vital_status = clinical_data$vital_status,
+      days_to_death = clinical_data$days_to_death,
+      days_to_last_follow_up = clinical_data$days_to_last_follow_up
+    )
+    
+    surv_data$time <- ifelse(
+      surv_data$vital_status == "Dead",
+      surv_data$days_to_death,
+      surv_data$days_to_last_follow_up
+    )
+    surv_data$status <- ifelse(surv_data$vital_status == "Dead", 1, 0)
+    surv_data <- na.omit(surv_data[, c("NOCT_expr", "time", "status")])
+    
+    cutoff <- median(surv_data$NOCT_expr)
+    surv_data$group <- ifelse(surv_data$NOCT_expr > cutoff, "High", "Low")
+    
+    surv_obj <- Surv(time = surv_data$time, event = surv_data$status)
+    km_fit <- survfit(surv_obj ~ group, data = surv_data)
+    logrank_test <- survdiff(surv_obj ~ group, data = surv_data)
+    cox_model <- coxph(surv_obj ~ NOCT_expr, data = surv_data)
+    plot_list[[temp_gene]]=ggsurvplot(  km_fit,
+                                        data = surv_data,
+                                        pval = TRUE,
+                                        linetype = "solid",
+                                        conf.int = F,
+                                        risk.table = F,
+                                        legend.labs = c("High", "low"),
+                                        legend.title = temp_gene,
+                                        palette = c("#ff837d","#4ECDC4"),
+                                        ggtheme = theme(panel.border = element_rect(fill = NULL),
+                                                        axis.title = element_blank(),
+                                                        plot.title = element_text(hjust = 0.5),
+                                                        text = element_text(size = 8),
+                                                        panel.grid = element_blank(),
+                                                        panel.background = element_blank()),
+                                        xlab = "Time (days)",
+                                        ylab = "Overall Survival Probability"
+    )
+    
+  }
+  
+  
+  plot[[pro]] <- lapply(plot_list, function(x) x$plot)
+  
+}
+}
+mytheme=theme(plot.title = element_text(hjust = 0.5,
+                                        margin = margin(b = 0, unit = "pt")),
+              legend.position = "top",
+              legend.margin = margin(t=0,b=0),
+              plot.margin = margin(t=0,b=20,l=10,r=10))
+p1= wrap_plots(plot[[1]], ncol = 3)&
+  labs(title=names(plot[1]))&mytheme
+p2= wrap_plots(plot[[2]], ncol = 3)&theme(legend.position = "top")&
+  labs(title=names(plot[2]))&mytheme
+p3= wrap_plots(plot[[3]], ncol = 3)&theme(legend.position = "top")&
+  labs(title=names(plot[3]))&mytheme
+p4= wrap_plots(plot[[4]], ncol = 3)&theme(legend.position = "top")&
+  labs(title=names(plot[4]))&mytheme
+
+combined_plot=wrap_plots(list(p1,p2,p3,p4),
+                         nrow=4,
+                         # guides = "collect",
+                         axes = "collect",
+                         axis_titles = "collect_x")
+
+pdf("./survival.pdf",width = 15/2.53,height = 24/2.53)
+combined_plot
+dev.off()
+```

@@ -1,0 +1,691 @@
+---
+title: "Fig 5. scRNA-seq reveals the effect of gut microbes on liver-gut axis."
+author: "Liang Huang"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+(d) t-distributed Stochastic Neighbor Embedding (tSNE) of scRNA-seq (top) and features plot of top3 genes (bottom). 
+(e) Top 3 genes expression of each cell types in liver (right) and colon (left).
+```{r setup, include=FALSE}
+library(Seurat)
+library(RColorBrewer)
+library(ggplot2)
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/scRNA_imeta")
+rm(list = ls())
+gc()
+liver=readRDS("./liver.rds")
+colon=readRDS("./colon.rds")
+gc()
+
+gene_list=list("colon"=c("Noct", "Mvk", "Foxo3"),
+               "liver"=c("Rorc", "Akr1c19", "Gpcpd1"))
+data_list=list("colon"=colon,"liver"=liver)
+plot=list()
+################liver#############
+for(tissue in c("colon","liver")){
+    df=data_list[[tissue]]
+    gc()
+    Idents(df)=df$celltypes
+    color=brewer.pal(n = 12,name = "Set3")
+    n=length(unique(df@meta.data$celltypes))
+    value_tsne=as.data.frame(df@reductions[["tsne"]]@cell.embeddings)
+    minx=min(value_tsne$tSNE_1)
+    x_limit=max(value_tsne$tSNE_1)-min(value_tsne$tSNE_1)
+    miny=min(value_tsne$tSNE_2)
+    y_limit=max(value_tsne$tSNE_2)-min(value_tsne$tSNE_2)
+    DimPlot(df,reduction = "tsne",
+            cols=colorRampPalette(color)(n),
+            label = T,repel = T,
+            label.size = 3,
+            raster = F)+
+      labs(title=tissue)+
+      theme(text = element_text(size=10),
+            legend.key.size = unit(0.35,"cm"),
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            axis.line = element_blank(),
+            axis.title = element_blank(),
+            plot.title = element_text(hjust = 0.5),
+            legend.position = "none"
+      )+
+      geom_segment(aes(x = minx, xend = minx +x_limit/5, y = miny, yend = miny),
+                   arrow = arrow(length = unit(0.1, "cm")),
+                   size = 0.5) +
+      geom_segment(aes(x = minx, xend = minx, y = miny, yend = miny + x_limit/5),
+                   arrow = arrow(length = unit(0.1, "cm")),
+                   size = 0.5)+
+      geom_text(aes(x=minx+x_limit/10,y=miny,label="tSNE1"),size=8,size.unit = "pt",vjust=1.5)+
+      geom_text(aes(x=minx,y=miny+y_limit/10,label="tSNE2"),size=8,size.unit = "pt",vjust=-1.2,angle=90)+
+      coord_cartesian(expand = T,clip = "off")
+
+    ggsave(paste0("./",tissue,"_tSNE.pdf"),units = "cm",width = 10,height = 8)
+
+    #get mean expression value of interested genes
+    samples <- unique(data_list[[tissue]]@meta.data$orig.ident)
+    results_list <- list()
+    for (sample in samples) {
+      sample_subset <- subset(data_list[[tissue]], subset = orig.ident == sample)
+      expression_matrix <- GetAssayData(sample_subset, 
+                                        assay = "RNA", 
+                                        slot = "scale.data") 
+      gene_expression <- expression_matrix[gene_list[[tissue]], ]
+      
+      avg_exp_df <- rowMeans(gene_expression)
+      avg_exp_df <- as.data.frame(t(avg_exp_df))
+      
+      avg_exp_df$Sample <- sample
+
+      results_list[[sample]] <- avg_exp_df
+    }
+
+    final_df <- do.call(rbind, results_list)
+    rownames(final_df) <- NULL 
+    library(tidyr)
+    final_long <- final_df %>%
+      pivot_longer(
+        cols = gene_list[[tissue]],
+        names_to = "Gene",
+        values_to = "MeanExpression"
+      )
+
+    write.csv(final_long,paste0(tissue,"_mean_expression_of_genes.csv"))
+    
+    
+    markers=FindAllMarkers(df)
+    write.csv(markers,paste0(tissue,"_markers.csv"))
+
+    markers=read.csv(paste0(tissue,"_markers.csv"),row.names = 1)
+    temp_mar=markers[markers$gene %in% gene_list[[tissue]] & markers$avg_log2FC > 0,]
+
+    p=ggplot(temp_mar,aes(x=cluster,y=gene))+
+      geom_point(aes(size=pct.1,fill=avg_log2FC),shape=21)+
+      scale_fill_gradientn(colors=
+                             c("#31479F","#1CB4C5","#85C047","#F7BA07","#FF564C"),name="Expression \n log2(FC)")+
+      scale_size_continuous(name = "Percent",range = c(1,5))+
+      theme_bw(base_size = 8)+
+      labs(y="",x=tissue)+
+      guides(
+        color = guide_colorbar(
+          title = "Expression log2(FC)",
+          title.position = "top",
+          barheight = unit(2, "cm"),
+          barwidth = unit(1, "cm"), 
+          order = 2 
+        ),
+        size = guide_legend(
+          title = "Percent",
+          title.position = "top",
+          order = 1
+        )
+      ) +
+      theme(
+        axis.text.x = element_text(angle = -45,hjust = 0,vjust = 0.5),
+        legend.title.position = "top",
+        legend.text.position = "bottom",
+        legend.position = "top",
+        legend.key.size = unit(0.4,"cm"),
+        legend.text = element_text(size = 6),legend.title = element_text(size = 8),
+        plot.margin = margin(t=20,r=10),
+        legend.margin = margin(0,0,0,0)
+      )
+    p
+    plot[[tissue]]=p
+    ggsave(paste0(tissue,"celltype_of_genes.pdf"),device = cairo_pdf,
+           units = "cm",width = length(unique(temp_mar$cluster))*1+1,height = 8)
+
+    FeaturePlot(df,features = gene_list[[tissue]],
+                reduction = "tsne",
+                cols = c("grey","#D6604C","#670920"),order = T,
+                ncol = 3)&
+      theme(text = element_text(size=10),
+            legend.position = "none",
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            axis.line = element_blank(),
+            axis.title = element_blank()
+      )
+    ggsave(paste0("./",tissue,"_featureplot.pdf"),units = "cm",width = 12,height = 4)
+
+        c_r <- read.csv("./cytokine_receptor.csv")
+    for (i in 1:2) {
+      c_r[,i]=tolower(c_r[,i])
+      substring(c_r[,i],1,1)=toupper(substring(c_r[,i],1,1))
+
+    }
+    cytokine_genes=unique(c(c_r$Cytokine,c_r$Receptor))
+    cytokine_genes=cytokine_genes[cytokine_genes %in% rownames(df)]
+    df$mouse_celltype <- paste(df$orig.ident, df$celltypes, sep = "_")
+    Idents(df) <- "mouse_celltype"
+
+    avg_expression <- AverageExpression(df,
+                                        assays = "RNA",
+                                        features = cytokine_genes,
+                                        slot = "data")$RNA
+    expression_df <- as.data.frame(avg_expression)
+    expression_df=data.frame(t(expression_df))
+    expression_df$sample <- sapply(strsplit(rownames(expression_df), "_"), `[`, 1)
+    expression_df$celltype <- sapply(strsplit(rownames(expression_df), "_"), function(x) paste(x[-1], collapse = "_"))
+    expression_df <- expression_df[, c("sample", cytokine_genes)]
+
+    write.csv(expression_df,paste0("./",tissue,"_c_r_exp.csv"))
+
+    sample_inf=data.frame(row.names=rownames(expression_df),
+                          mice=sub("-[^-]*$", "", rownames(expression_df)),
+                          tissue=tissue,
+                          celltype=sub(".*-", "", rownames(expression_df)))
+    write.csv(sample_inf,paste0("./",tissue,"_sample_information.csv"))
+}
+library(patchwork)
+plot[[1]]+plot[[2]]
++plot_layout(guides = "collect")+theme(legend.position = "top")
+ggsave("celltype_of_genes.pdf",
+       units = "cm",width = 12,height = 6)
+
+
+
+```
+(a)Connection map of cytokine-receptor coupling across liver and colon in a representative GF (left) and SPF (right). Genes that code cytokines and receptors are aligned along the perimeter of the circles. From the outer layer to the center is the tissue expressing the genes inferred cell specificity, classification of cytokine or receptor, and the connections between cytokines and its matching receptors. The connections were indicated in different colors according to the classification of direction.
+```{r setup, include=FALSE}
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/scRNA_imeta")
+colon=read.csv("./colon_c_r_exp.csv",row.names = 1)
+liver=read.csv("./liver_c_r_exp.csv",row.names = 1)
+
+
+colon_sam=read.csv("./colon_sample_information.csv",row.names = 1)
+liver_sam=read.csv("./liver_sample_information.csv",row.names = 1)
+sample=rbind(colon_sam,liver_sam)
+sample$mice=gsub("-pre-B/pro","",sample$mice)
+sample$celltype[sample$celltype=="B"]="pre-B/pro"
+sample$mice=sub("^([^-]+).*?([0-9]+)$", "\\1\\2", sample$mice)
+
+c_r=read.csv("./cytokine_receptor.csv")
+
+###########data pre-process###########
+library(tidyverse)
+library(circlize)
+library(dplyr)
+split_data=function(x){
+  meta_data <- data.frame(sample_id = rownames(x)) %>%
+    separate(sample_id,
+             into = c("group", "tissue", "cell_type"),
+             sep = "-",
+             extra = "merge",
+             remove = FALSE)
+
+  combined_data <- x %>%
+    as.data.frame() %>%
+    rownames_to_column("sample_id") %>%
+    left_join(meta_data, by = "sample_id") %>%
+    select(
+      setdiff(names(meta_data), "sample_id"),
+      setdiff(names(x), "sample_id")
+    )
+  return(combined_data)
+}
+
+colon_split=split_data(colon)
+rownames(liver)=gsub("\\-Sc\\-","",rownames(liver))
+rownames(liver)=gsub("\\-Sc","",rownames(liver))
+liver_split=split_data(liver)
+
+colnames(colon_split)==colnames(liver_split)
+
+GF_data=rbind(colon_split[colon_split$group=="GF",],liver_split[liver_split$group=="GF",])
+SPF_data=rbind(colon_split[colon_split$group=="SPF",],liver_split[liver_split$group=="SPF",])
+
+
+################link count##############
+
+KEGG_data=c_r
+upper=function(x){
+  x=tolower(x)
+  substring(x,1,1)=toupper(substring(x,1,1))
+  return(x)
+}
+KEGG_data$Cytokine=upper(KEGG_data$Cytokine)
+KEGG_data$Receptor=upper(KEGG_data$Receptor)
+
+link_count=function(x){
+  if(unique(x$group)=="GF"){
+    n=2
+  }else{n=3}
+  res=data.frame(Total_links = 0,
+                 Colon_Colon = 0,
+                 Colon_Liver = 0,
+                 Liver_Colon = 0,
+                 Liver_Liver = 0,
+                 mice=0)
+  res=res[-1,]
+  for (m in c(1:n)){
+    GF_df=x[grep(m,x$tissue),]
+    sample_name=paste0(unique(GF_df$group),m)
+    GF_df$tissue=gsub("\\d","",GF_df$tissue)
+    colon_data <- x[x$tissue == paste0("colon",m), ]
+    liver_data <- x[x$tissue == paste0("liver",m), ]
+
+    # screen max expression of cytokines/receptors
+    calculate_max_cytokines <- function(data) {
+      cytokine_data <- data %>%
+        select(-group, -cell_type, -tissue)
+
+      max_values <- cytokine_data %>%
+        summarise(across(everything(), max, na.rm = TRUE))
+
+      max_values <- max_values %>%
+        mutate(statistic = "max_value",
+               group = unique(data$group),
+               tissue = unique(data$tissue)) %>%
+        select(statistic, group, tissue, everything())
+
+      return(max_values)
+    }
+    colon_max=calculate_max_cytokines(colon_data)
+    liver_max=calculate_max_cytokines(liver_data)
+
+    #ready data
+    colon_expr <- t(colon_max[, 4:(ncol(colon_data))])  
+    liver_expr <- t(liver_max[, 4:(ncol(liver_data))])
+
+    # count interaction of colon
+    d_colon <- left_join(KEGG_data,
+                         transform(colon_expr, Cytokine = rownames(colon_expr)),
+                         by = "Cytokine")
+    d_colon <- left_join(d_colon,
+                         transform(colon_expr, Receptor = rownames(colon_expr)),
+                         by = "Receptor")
+    colnames(d_colon)[3:4] <- c("cytokine_expr", "receptor_expr")
+
+    # count interaction of liver
+    d_liver <- left_join(KEGG_data,
+                         transform(liver_expr, Cytokine = rownames(liver_expr)),
+                         by = "Cytokine")
+    d_liver <- left_join(d_liver,
+                         transform(liver_expr, Receptor = rownames(liver_expr)),
+                         by = "Receptor")
+    colnames(d_liver)[3:4] <- c("cytokine_expr", "receptor_expr")
+    d_liver$Cytokine <- paste0("L_", d_liver$Cytokine)
+
+    # cytokine (colon)-receptor (liver)
+    d_colon_to_liver <- left_join(KEGG_data,
+                                  transform(colon_expr, Cytokine = rownames(colon_expr)),
+                                  by = "Cytokine")
+    d_colon_to_liver <- left_join(d_colon_to_liver,
+                                  transform(liver_expr, Receptor = rownames(liver_expr)),
+                                  by = "Receptor")
+    d_colon_to_liver$Receptor <- paste0("L_", d_colon_to_liver$Receptor)
+    colnames(d_colon_to_liver)[3:4] <- c("cytokine_expr", "receptor_expr")
+
+
+    #  cytokine (liver)-receptor (colon)
+    d_liver_to_colon <- left_join(KEGG_data,
+                                  transform(liver_expr, Cytokine = rownames(liver_expr)),
+                                  by = "Cytokine")
+    d_liver_to_colon <- left_join(d_liver_to_colon,
+                                  transform(colon_expr, Receptor = rownames(colon_expr)),
+                                  by = "Receptor")
+    d_liver_to_colon$Cytokine <- paste0("L_", d_liver_to_colon$Cytokine)
+    colnames(d_liver_to_colon)[3:4] <- c("cytokine_expr", "receptor_expr")
+
+    # combine all interactions
+    all_links <- rbind(
+      d_colon[, c("Cytokine", "Receptor", "cytokine_expr", "receptor_expr")],
+      d_liver[, c("Cytokine", "Receptor", "cytokine_expr", "receptor_expr")],
+      d_colon_to_liver[, c("Cytokine", "Receptor", "cytokine_expr", "receptor_expr")],
+      d_liver_to_colon[, c("Cytokine", "Receptor", "cytokine_expr", "receptor_expr")]
+    )
+
+    # filter valid interaction（expression > 3）
+    valid_links <- subset(all_links, receptor_expr > 3 & cytokine_expr > 3)
+
+    # marker tissue source
+    valid_links$cytokine_source <- ifelse(grepl("^L_", valid_links$Cytokine), "liver", "colon")
+    valid_links$receptor_source <- ifelse(grepl("^L_", valid_links$Receptor), "liver", "colon")
+
+    # count interaction types
+    valid_links$interaction_type <- paste(valid_links$cytokine_source,
+                                          valid_links$receptor_source,
+                                          sep = "_")
+
+    result <- data.frame(
+      Total_links = nrow(valid_links),
+      Colon_Colon = sum(valid_links$interaction_type == "colon_colon"),
+      Colon_Liver = sum(valid_links$interaction_type == "colon_liver"),
+      Liver_Colon = sum(valid_links$interaction_type == "liver_colon"),
+      Liver_Liver = sum(valid_links$interaction_type == "liver_liver"),
+      mice=sample_name
+    )
+    res=rbind(res,result)
+  ##################plot circos##################
+    cell_types <- unique(GF_df$cell_type)
+    cell_type_mapping <- setNames(1:length(GF_df$cell_type), cell_types)
+    cytokine_cols <- 4:ncol(GF_df)  
+    heatmap_data <- GF_df[, cytokine_cols]
+    
+    highlight=function(x){
+      #replace value
+      for (j in 1:ncol(x)) {
+        max_value <- max(x[, j], na.rm = TRUE)
+        for(i in 1:nrow(x)){
+          current_value <- x[i, j]
+          if(current_value == max_value && current_value > 0) {
+            cell_type <- GF_df$cell_type[i]
+            cell_type_int <- cell_type_mapping[cell_type]
+            x[i, j] <- cell_type_int
+          } else {
+            x[i, j] <- 0
+          }
+          
+        }
+      }
+      #reorder data frame
+      rank=numeric()
+      for (i in 1:nrow(x)){
+        cell_type <- GF_df$cell_type[i]
+        cell_type_int <- cell_type_mapping[cell_type]
+        for (j in 1:ncol(x)){
+          if(x[i,j]==cell_type_int){
+            rank=rbind(rank,names(x)[j])
+          }
+        }
+      }
+      zero_value=names(x)[!names(x) %in% rank]
+      x=x[,c(rank,zero_value)]
+      # x=x[,colSums(x!=0)]
+      return(x)
+    }
+    
+    df_colon=heatmap_data[GF_df$tissue=="colon",]
+    rownames(df_colon)=GF_df$cell_type[GF_df$tissue=="colon"]
+    df_liver=heatmap_data[GF_df$tissue=="liver",]
+    rownames(df_liver)=GF_df$cell_type[GF_df$tissue=="liver"]
+    
+    temp=df_liver[!rownames(df_liver)%in%rownames(df_colon),]
+    temp=temp*0
+    df_colon=rbind(df_colon,temp)
+    
+    cell_order=c( "NK/T","Enterocyte","B cell","Fibroblast","Myeloid","SMC",
+                  "Endothelial","LEC","Plasma","Astrocyte","DP","B cycling",    
+                  "Cholangiocyte", "T cycling","pre-B/pro-B","LSEC","Erythrocyte" )
+    df_colon=df_colon[match(cell_order,rownames(df_colon)),]
+    df_liver=df_liver[match(cell_order,rownames(df_liver)),]
+    
+    df_colon=highlight(df_colon)
+    df_liver=highlight(df_liver)
+    
+    colnames(df_liver)=paste0("L_",colnames(df_liver))
+    heatmap_data2=cbind(df_colon,df_liver)
+    
+    {
+      layout(matrix(c(1, 2), nrow = 1), widths = c(1, 1))
+      split1 <- factor(c(rep("colon",ncol(df_colon)),rep("liver",ncol(df_liver))), levels = c("colon","liver"))
+      
+      circos.clear()
+      circos.par("canvas.xlim" = c(-1, 1), 
+                 "canvas.ylim" = c(-1, 1),
+                 gap.after = c(2.5, 2.5),
+                 start.degree = 85)
+      circos.initialize(split1, xlim=cbind(rep(0,2),
+                                           c(length(split1[split1=="colon"]),
+                                             length(split1[split1=="liver"]))))
+      circos.track(split1,ylim=c(0,1),track.height = 0.05)
+      draw.sector(get.cell.meta.data("cell.start.degree", sector.index = "colon"),
+                  get.cell.meta.data("cell.end.degree", sector.index = "colon"),
+                  rou1 = get.cell.meta.data("cell.top.radius", track.index = 1),
+                  rou2 = get.cell.meta.data("cell.bottom.radius", track.index = 1), 
+                  col = "#CC99CC")
+      draw.sector(get.cell.meta.data("cell.start.degree", sector.index = "liver"),
+                  get.cell.meta.data("cell.end.degree", sector.index = "liver"),
+                  rou1 = get.cell.meta.data("cell.top.radius", track.index = 1),
+                  rou2 = get.cell.meta.data("cell.bottom.radius", track.index = 1), 
+                  col = "red3")
+      # legend("topright", legend = unique(split1), 
+      #        fill = c("colon"="#CC99CC","liver"="red3"), title = "tissues")
+      
+      n_cell_types <- length(cell_types)
+      color=c("gray90","darkgreen","purple4","red3","goldenrod1","salmon","navy","turquoise1","steelblue2","coral4","black",
+              "deeppink3","purple","plum4","deeppink","skyblue3","green1","darkolivegreen4","palegreen1","olivedrab1")
+      col1 = colorRamp2(0:19, color)
+      
+      circos.clear()
+      par(new = TRUE)
+      circos.par("canvas.xlim" = c(-1.1, 1.1), "canvas.ylim" = c(-1.1, 1.1),
+                 gap.after = c(2.5, 2.5), start.degree = 85)
+      
+      circos.heatmap(t(heatmap_data2), col = col1, split = split1, track.height = 0.3,
+                     cluster = FALSE, 
+                     cell_width = rep(1, nrow(heatmap_data)),
+                     bg.border = "black", bg.lty = 1, bg.lwd = 1)
+
+      
+      heatmap_data3=heatmap_data[1:2,]
+      heatmap_data3[1:2,]=0
+      for (i in 1:ncol(heatmap_data3)){
+        if(names(heatmap_data3)[i] %in% valid_links$Cytokine){
+          heatmap_data3[1,i]=1
+        }else{
+          if(names(heatmap_data3)[i] %in% valid_links$Receptor){
+            heatmap_data3[1,i]=-1
+          }else{heatmap_data3[1,i]=0}
+        }
+        
+        if(paste0("L_",names(heatmap_data3)[i]) %in% valid_links$Cytokine){
+          heatmap_data3[2,i]=1
+        }else{
+          if(paste0("L_",names(heatmap_data3)[i]) %in% valid_links$Receptor){
+            heatmap_data3[2,i]=-1
+          }else{heatmap_data3[2,i]=0}
+        }
+      }
+      
+      heatmap_data3=data.frame(value=c(t(heatmap_data3)[,1],t(heatmap_data3)[,2]),
+                               row.names = c(colnames(heatmap_data3),paste0("L_",colnames(heatmap_data3)))
+      )
+      heatmap_data3$type=ifelse(heatmap_data3$value==0,"",ifelse(heatmap_data3$value==1,"Cytokine","Receptor"))
+      split2 <- factor(c(rep("colon",317),rep("liver",317)), levels = c("colon","liver"))
+      
+      color2=c("green", "white", "orange")
+      col2 = colorRamp2(c(-1, 0, 1), color2)
+      
+      circos.heatmap(heatmap_data3$value,
+                     split=split2, 
+                     col = col2, 
+                     track.height = 0.05,
+                     cluster = F)
+      # legend("bottomright", legend = c("Cytokine","Receptor"),
+      #        fill = color2[-2],
+      #        title = "Cytokine/Receptor")
+      
+      heatmap_data3$cytokine_pos=c(1:317)
+      heatmap_data3$Cytokine=rownames(heatmap_data3)
+      heatmap_data3$receptor_pos=c(1:317)
+      heatmap_data3$Receptor=rownames(heatmap_data3)
+      
+      link_data=left_join(valid_links,heatmap_data3[,3:4],by = "Cytokine")
+      link_data=left_join(link_data,heatmap_data3[,5:6],by = "Receptor")
+      for(i in 1:nrow(link_data)) {
+        if(link_data$interaction_type[i]=="colon_liver"){
+          circos.link(
+            sector.index1 = link_data$cytokine_source[i],
+            point1 = c(link_data$cytokine_pos[i], link_data$cytokine_pos[i]),
+            sector.index2 = link_data$receptor_source[i], 
+            point2 = c(link_data$receptor_pos[i], link_data$receptor_pos[i]),
+            col = adjustcolor("red", alpha.f = 0.6)
+          )
+        }else{
+          if(link_data$interaction_type[i]=="liver_colon"){
+            circos.link(
+              sector.index1 = link_data$cytokine_source[i],
+              point1 = c(link_data$cytokine_pos[i], link_data$cytokine_pos[i]),
+              sector.index2 = link_data$receptor_source[i], 
+              point2 = c(link_data$receptor_pos[i], link_data$receptor_pos[i]),
+              col = adjustcolor("blue", alpha.f = 0.6)
+            )
+            
+          }else{    
+            circos.link(
+              sector.index1 = link_data$cytokine_source[i],
+              point1 = c(link_data$cytokine_pos[i], link_data$cytokine_pos[i]),
+              sector.index2 = link_data$receptor_source[i], 
+              point2 = c(link_data$receptor_pos[i], link_data$receptor_pos[i])
+            )
+            
+          }
+        }
+      }
+      
+      par(mar = c(0, 0, 0, 0) + 0.1)  
+      plot.new()
+      
+      cex=0.6
+      legend(x = 0.1, y = 0.7, legend = unique(split1), 
+             fill = c("colon" = "#CC99CC", "liver" = "red3"), 
+             title = "Tissues", bty = "n", cex = cex)
+      legend(x = 0.4, y = 0.7, legend = c("Cytokine", "Receptor"),
+             fill = color2[c(1,3)], title = "Cytokine/Receptor",
+             cex = cex, bty = "n")
+      
+      legend(x = 0.1, y = 0.55, legend = rownames(heatmap_data2),
+             fill = color[2:17], title = "Cell Types",
+             ncol = 2, cex = cex, bty = "n")
+      
+      legend(x = 0.1, y = 0.2, legend = c("colon \u2192 liver","liver \u2192 colon","intra-tissue"),
+             col = c( "red", "blue","black"),
+             lty = 1,           # 实线
+             lwd = 2, 
+             title = "Direction",
+             cex = cex, bty = "n")
+      
+      
+    }
+    dev.copy2pdf(file = paste0(sample_name,"_cytokine_circos_plot.pdf"), height = 12/2.53, width = 18/2.53)
+    dev.off()
+  }
+  write.csv(res,paste0(unique(GF_df$group),"_linkcount.csv"))
+}
+link_count(SPF_data)
+link_count(GF_data)
+```
+
+(b) Links count of cytokine-receptor coupling of all direction. c Correlation between links count, which are from liver to colon, and expression level of top 3 genes in liver and colon, respectively.
+```{r setup, include=FALSE}
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/scRNA_imeta")
+library(ggplot2)
+library(ggsignif)
+df_GF=read.csv("./GF_linkcount.csv",row.names = 1)
+df_SPF=read.csv("./SPF_linkcount.csv",row.names = 1)
+
+data=rbind(df_GF,df_SPF)
+data$group=gsub("\\d+","",data$mice)
+
+A="GF"
+B="SPF"
+comparisons = list(c(A,B))
+color=c( "#377EB8","#E41A1C")
+mytheme= 
+  theme(text=element_text(size = 8),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(colour = "black",size = 0.5),
+        axis.text.x = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5)
+
+  )
+
+library(tidyr)
+data=data[,-5]
+data_long <- data %>%
+  pivot_longer(cols = c(Total_links, Colon_Colon, Colon_Liver, Liver_Colon),
+               names_to = "type", values_to = "count")
+
+type_labels <- c("Total_links" = "all links",
+                 "Colon_Colon" = "Colon \u2192 Colon", 
+                 "Colon_Liver" = "Colon \u2192 Liver",
+                 "Liver_Colon" = "Liver \u2192 Colon")
+
+data_long$type <- factor(data_long$type, levels = names(type_labels))
+
+p <- ggplot(data_long, aes(x = group, y = count, color = group)) +
+  stat_boxplot(geom = "errorbar", width = 0.3) +
+  geom_boxplot(width = 0.5, outlier.color = "black", outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.6, size = 1) +
+  scale_color_manual(values = color) +
+  geom_signif(
+    comparisons = comparisons,
+    test = "t.test",
+    y_position = sapply(split(data_long$count, data_long$type), 
+                        function(x) max(x, na.rm = TRUE) * 1.15),
+    tip_length = 0,
+    textsize = 2.5
+  ) +
+  facet_wrap(~ type, labeller = labeller(type = type_labels), nrow = 1,scales = "free") +
+  mytheme +
+  theme(axis.text.x = element_blank()) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1)))
+p
+ggsave("linkcount_facet.pdf", p, width = 16/2.53, height = 4/2.53)
+
+```
+
+(c) Correlation between links count, which are from liver to colon, and expression level of top 3 genes in liver and colon, respectively.
+```{r setup, include=FALSE}
+rm(list = ls())
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/scRNA_imeta")
+library(dplyr)
+library(ggpubr)
+
+df_GF=read.csv("./GF_linkcount.csv",row.names = 1)
+df_SPF=read.csv("./SPF_linkcount.csv",row.names = 1)
+data=rbind(df_GF,df_SPF)
+data$group=gsub("\\d+","",data$mice)
+
+df1=read.csv("./colon_mean_expression_of_genes.csv",row.names = 1)
+df1$Sample=gsub("_colon","",df1$Sample)
+df1$tissue="colon"
+df2=read.csv("./liver_mean_expression_of_genes.csv",row.names = 1)
+df2$Sample=gsub("_liver_Sc","",df2$Sample)
+df2$Sample=gsub("_","",df2$Sample)
+df2$tissue="liver"
+
+
+all_df=rbind(df1,df2)
+names(all_df)[1]="mice"
+all_df=left_join(all_df,data,by = "mice")
+
+all_text_size=8 
+cor_text_size=2.5 
+point_size=1
+
+all_df$Gene=factor(all_df$Gene,levels = c("Noct","Mvk","Foxo3","Rorc","Akr1c19","Gpcpd1" ))
+
+A=names(all_df)[3]
+B=names(all_df)[8]
+p=ggscatter(all_df, 
+            x = A, y = B, 
+            color = "black",
+            add = "reg.line", 
+            conf.int = TRUE,
+            add.params = list( color = "red",fill = "grey",fill = "grey"),
+            cor.coef = T,
+            size = point_size,
+            cor.coef.size = cor_text_size,
+            cor.coeff.args = list(),
+            cor.method = "pearson",
+            repel=T)+
+  labs(y="cytokine-receptor interactions count \n from liver to colon",
+       x="scaled gene expression")+
+  facet_wrap(~Gene,ncol=3,scales = "free_x",axes = "all")+
+  theme_bw(base_size = all_text_size)+
+  theme(
+    panel.border = element_blank(),
+    axis.line = element_line(colour = "black",size = 0.3),
+    panel.grid = element_blank(),
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5))
+p
+
+ggsave("6_genes_cor.pdf",units = "cm",width = 12,height = 8)
+```

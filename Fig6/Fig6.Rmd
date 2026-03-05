@@ -1,0 +1,530 @@
+---
+title: "Fig 6. scATAC-seq uncovers varied transcription initiation in colonic enterocytes."
+author: "Liang Huang"
+date: "`r Sys.Date()`"
+output: html_document
+---
+(a)-(c) Quality of scATAC data, evaluated by TSS enrichment (a), fragment size (b) and distance from center (c).
+```{r setup, include=FALSE}
+# devtools::install_github("GreenleafLab/ArchR", ref="master", repos = BiocManager::repositories())
+
+library(Signac)
+library(Seurat)
+library(ArchR)
+
+setwd("F:/data/GF_mice_scRNAseq/ATAC/Result-X101SC21072094-Z03-J001-B1-37/2.cellranger_atac")
+
+folders <- list.files(pattern = "GF|FMT|SPF") 
+inputFiles=gsub("ATAC","ATAC/fragments.tsv.gz",folders)
+names(inputFiles) <- gsub("_ATAC","", folders)
+
+addArchRGenome("mm10")
+ArrowFiles <- createArrowFiles( inputFiles = inputFiles, sampleNames = names(inputFiles),
+                                QCDir ="1.QualityControl",
+                                minTSS = 4, minFrags = 1000, addTileMat = TRUE, addGeneScoreMat = TRUE )
+ArrowFiles
+
+
+projHeme1 <- ArchRProject(ArrowFiles = ArrowFiles, outputDirectory ="2.ArchRProject",copyArrows = TRUE)
+projHeme1
+
+getAvailableMatrices(projHeme1)
+head(projHeme1@cellColData)
+head(projHeme1$cellNames)
+head(projHeme1$Sample)
+quantile(projHeme1$TSSEnrichment)
+
+
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/scATAC")
+saveRDS(projHeme1,"./scATAC_ArchRProject.rds")
+
+p1 <- plotGroups(ArchRProj = projHeme1, groupBy ="Sample", colorBy ="cellColData",
+                 name ="TSSEnrichment",plotAs ="ridges",baseSize = 10)
+
+ggsave(filename ="TSS_Score.pdf",units = "cm",width = 8, height = 8,plot = p1)
+
+
+p2 <- plotFragmentSizes(ArchRProj = projHeme1)
+p3=p2+theme(legend.title = element_blank(),legend.position = "right")
+ggsave(filename ="Fragment_size.pdf",units = "cm",width = 10, height = 8,plot = p3)
+
+p4 <- plotTSSEnrichment(ArchRProj = projHeme1)
+p4=p4+theme(legend.title = element_blank(),legend.position = "right")
+ggsave(filename ="TSS_profiles.pdf",units = "cm",width = 10, height = 8,plot = p4)
+
+
+p=p1+p3+p4&theme(text = element_text(size = 8),
+  legend.title = element_blank(),
+               legend.position = "none")
+ggsave(filename ="ATAC_quality.pdf",units = "cm",width = 28, height = 8,plot = p)
+
+```
+
+
+(d)t-distributed Stochastic Neighbor Embedding (tSNE) of scATAC-seq. 
+(e)Ratio of all cell types in different conditions.
+```{r setup, include=FALSE}
+library(Signac)
+library(Seurat)
+library(GenomicRanges)
+library(future)
+library(ggplot2)
+library(RColorBrewer)
+
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/scATAC")
+combined_high_conf=readRDS("./anno_sc_atac.rds")
+
+combined_high_conf=RunTSNE(combined_high_conf,reduction = "pca",dims = 2:30)
+n=length(unique(combined_high_conf@meta.data$predicted.id))
+combined_high_conf@meta.data$group=factor(combined_high_conf@meta.data$group,levels = c("GF","FMT","SPF"))
+value_tsne=as.data.frame(combined_high_conf@reductions[["tsne"]]@cell.embeddings)
+minx=min(value_tsne$tSNE_1)
+x_limit=max(value_tsne$tSNE_1)-min(value_tsne$tSNE_1)
+miny=min(value_tsne$tSNE_2)
+y_limit=max(value_tsne$tSNE_2)-min(value_tsne$tSNE_2)
+
+# color=c( "#984EA3","#E41A1C", "#377EB8", "#8DD3C7", "#80B1D3", "#BEBADA", "#FF7F00")
+color=brewer.pal(13,"Set2")
+DimPlot(combined_high_conf, reduction = "tsne",
+        group.by = 'predicted.id',
+        cols=colorRampPalette(color)(n),
+        split.by = 'group',
+        pt.size = 0.1)+
+  labs(title="")+
+  theme(text = element_text(size=10),
+        legend.key.size = unit(0.35,"cm"),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.title = element_blank(),
+        plot.title = element_text(hjust = 0.5)
+  )+
+  geom_segment(aes(x = minx, xend = minx +x_limit/5, y = miny, yend = miny),
+               arrow = arrow(length = unit(0.1, "cm")),
+               size = 0.5) +
+  geom_segment(aes(x = minx, xend = minx, y = miny, yend = miny + x_limit/5),
+               arrow = arrow(length = unit(0.1, "cm")),
+               size = 0.5)+
+  geom_text(aes(x=minx+x_limit/10,y=miny,label="tSNE1"),size=8,size.unit = "pt",vjust=1.5)+
+  geom_text(aes(x=minx,y=miny+y_limit/10,label="tSNE2"),size=8,size.unit = "pt",vjust=-1.2,angle=90)+
+  coord_cartesian(expand = T,clip = "off")
+
+ggsave("scATAC_tsne.pdf",units = "cm",width = 18,height = 6)
+
+
+########cell ratio#########
+library(ggpie)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+
+Ratio <- combined_high_conf@meta.data %>%
+  group_by(group,predicted.id) %>%
+  summarise(n = n()) %>%
+  group_by(group) %>%
+  mutate(count = n/sum(n)*100)
+
+color=colorRampPalette(color)(n)
+names(color)=unique(Ratio$predicted.id)
+
+plot=list()
+for (i in c("GF","FMT","SPF")){
+  df1=Ratio[Ratio$group==i,]
+  leap_cell=unique(Ratio$predicted.id)[!unique(Ratio$predicted.id) %in% df1$predicted.id]
+  if(length(leap_cell)>0){
+    n=length(leap_cell)
+    df1=rbind(df1,data.frame(group=rep(i,n),
+                             predicted.id=leap_cell,
+                             n=rep(0,n),
+                             count=rep(0,n)))
+    df1=df1[match(unique(Ratio$predicted.id),df1$predicted.id),]
+  }
+  plot[[i]] <- ggdonut(df1,
+                group_key = "predicted.id",
+                donut.label = F,
+                label_type = "none",
+                count_type = "count",
+                border_size = 0,
+                fill_color = color,
+                r0 = 0.1
+                ) +ggtitle(i)
+}
+
+plot[[1]]+plot[[2]]+plot[[3]] + plot_layout(guides = "collect") &
+  theme(legend.position='right',
+        legend.key.size = unit(0.5,"cm"),
+        text = element_text(size = 8),
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5)) &
+  guides(fill = guide_legend(ncol = 2, byrow = TRUE)) 
+ggsave("./cell_ratio.pdf",device = cairo_pdf,units = "cm",width = 18,height = 8)
+```
+
+(f)Intersection of significantly different peaks. 
+(g)Motif significantly enriched in different peaks.
+```{r setup, include=FALSE}
+library(Signac)
+library(Seurat)
+library(JASPAR2022)
+library(TFBSTools)
+library(BSgenome.Mmusculus.UCSC.mm10)
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/scATAC")
+# load data
+combined_high_conf <- readRDS("./anno_sc_atac.rds")
+DefaultAssay(combined_high_conf) <- 'ATAC'
+
+# filter NA and low expression
+combined_high_conf <- subset(combined_high_conf, 
+                             subset = nCount_ATAC > 1000 & 
+                               nCount_ATAC < 50000 &
+                               !is.na(nCount_ATAC))
+
+# obtain motif matrix
+pfm <- getMatrixSet(
+  x = JASPAR2022,
+  opts = list(collection = "CORE", tax_group = 'vertebrates', all_versions = FALSE)
+)
+
+# add motif
+gc()
+combined_high_conf=subset(combined_high_conf,predicted.id=="Enterocyte")
+combined_high_conf <- AddMotifs(
+  object = combined_high_conf,
+  genome = BSgenome.Mmusculus.UCSC.mm10,
+  pfm = pfm
+)
+
+# DE peaks
+Idents(combined_high_conf) <- combined_high_conf$group
+
+da_peaks <- FindMarkers(
+  object = combined_high_conf,
+  ident.1 = 'GF',
+  ident.2 = 'SPF',
+  only.pos = TRUE,
+  test.use = 'wilcox',
+  min.pct = 0.05
+)
+write.csv(file = "./da_peaks_SPF.csv",x = da_peaks)
+
+da_peaks2 <- FindMarkers(
+  object = combined_high_conf,
+  ident.1 = 'GF',
+  ident.2 = 'FMT',
+  only.pos = TRUE,
+  test.use = 'wilcox',
+  min.pct = 0.05
+)
+write.csv(file = "./da_peaks_FMT.csv",x = da_peaks2)
+
+top.da.peak <- rownames(da_peaks)[da_peaks$p_val_adj < 0.05 & abs(da_peaks$avg_log2FC) > 0.2630344]
+top.da.peak2 <- rownames(da_peaks2)[da_peaks2$p_val_adj < 0.05 & abs(da_peaks2$avg_log2FC) > 0.2630344]
+
+########overlap##########
+int=list("GF vs SPF"=top.da.peak,"GF vs FMT"=top.da.peak2)
+library(venn)
+venn(int,
+     ilabels = "counts",
+     zcolor = "style",
+     box=F,
+     ggplot = T)
+ggsave("./overlap_peaks.pdf",units = "cm",width = 5,height = 5)
+
+com.da.peaks=intersect(top.da.peak,top.da.peak2)
+
+if (length(com.da.peaks) > 500) {
+  com.da.peaks <- com.da.peaks[1:500]
+}
+
+
+############# motif enrichment###########
+enriched.motifs <- FindMotifs(
+  object = combined_high_conf,
+  features = com.da.peaks
+)
+
+write.csv(enriched.motifs,"./common_DE_peaks_Motif.csv")
+#############vocalo plot###########
+
+library(ggplot2)
+library(ggrepel)
+enriched.motifs=read.csv("./common_DE_peaks_Motif.csv",row.names = 1)
+
+repel_df=enriched.motifs[enriched.motifs$motif.name %in% c("STAT1","FOXP3","Atoh1","Foxo3",
+                                                           "GATA4","GATA5","FOXA1","FOXA2"),]
+p1=ggplot(enriched.motifs,aes(fold.enrichment,-log2(pvalue),fill=-log2(pvalue)))+
+  geom_point(aes(),size=2,shape=21)+
+  theme_classic()+
+  scale_fill_gradientn(colours = c( "grey", "#c90e1b"))+
+  geom_label_repel(data = repel_df,
+                   aes(fold.enrichment,-log2(pvalue),label=motif.name),
+                  max.overlaps = 100,size=1)+
+  labs(title = "Motif of common varied peaks")+
+  theme(plot.title=element_text(size=8,hjust = 0.5),
+        text=element_text(size = 8),
+        axis.title.x = element_text(size = 8),
+        axis.title.y = element_text(size = 8),legend.position = "none",
+        legend.title = element_blank())
+p1
+
+ggsave("./NonGF_Motif.pdf",p1,units = "cm",width = 5,height = 5)
+```
+
+(h)Different peaks plot of Noct in different conditions. 
+```{r setup, include=FALSE}
+library(motifmatchr)
+library(JASPAR2022)
+library(TFBSTools)
+library(BSgenome.Mmusculus.UCSC.mm10) 
+
+pfm_info <- getMatrixSet(JASPAR2022, list(collection = "CORE", tax_group = 'vertebrates'))
+
+motif_to_tf <- data.frame(
+  motif_id = names(pfm_info),
+  tf_name = sapply(pfm_info, function(x) x@name),
+  tf_symbol = sapply(pfm_info, function(x) {
+    name <- x@name
+    symbols <- regmatches(name, gregexpr("[A-Za-z0-9]+", name))[[1]]
+    if (length(symbols) > 0) symbols[1] else name
+  })
+)
+
+
+gc()
+pwm <- getMatrixSet(
+  x = JASPAR2022,
+  opts = list(species = 10090, all_versions = FALSE)  
+)
+combined_high_conf <- AddMotifs(combined_high_conf, genome = BSgenome.Mmusculus.UCSC.mm10, pfm = pwm)
+gc()
+
+enterocyte=subset(combined_high_conf,predicted.id=="Enterocyte")
+Idents(enterocyte)="group"
+Idents(enterocyte)=factor(Idents(enterocyte),levels = c( "SPF","FMT","GF"))
+enter_anno=Annotation(enterocyte)
+
+regions_highlight <- GRanges(seqnames = "chr3", 
+                  ranges = IRanges(start = 50866799, end = 50867719))
+CoveragePlot(
+  object = enterocyte,
+  idents = c("GF", "FMT", "SPF"),
+  region = "chr3-50866799-50867719",
+  region.highlight = regions_highlight,
+  extend.upstream = 1000,
+  extend.downstream = 1000
+)&theme(text = element_text(size = 8),line = element_line(linewidth = 0.5))
+ggsave("Noct_DEpeaks_enterocyte.pdf",units = "cm",width = 10,height = 6)
+```
+
+(i)Network which consist of nearest gene of differential peaks position and motif of differential peaks. Foxo3 and Noct are highlighted, and transcription factors of Noct are labeled.
+```{r setup, include=FALSE}
+library(ChIPseeker)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+library(org.Mm.eg.db)
+library(clusterProfiler)
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/scATAC")
+
+com.da.peaks=read.csv("./common_DE_peaks_Motif.csv",row.names = 1)
+peak_list <- strsplit(com.da.peaks, "-")
+peaks_gr <- GRanges(
+  seqnames = sapply(peak_list, `[`, 1),
+  ranges = IRanges(
+    start = as.numeric(sapply(peak_list, `[`, 2)),
+    end = as.numeric(sapply(peak_list, `[`, 3))
+  )
+)
+
+peakAnno <- annotatePeak(peaks_gr, 
+                         tssRegion = c(-3000, 3000),
+                         TxDb = TxDb.Mmusculus.UCSC.mm10.knownGene,
+                         annoDb = "org.Mm.eg.db")
+
+anno_df <- as.data.frame(peakAnno)
+head(anno_df)
+pfm_info <- getMatrixSet(JASPAR2022, list(collection = "CORE", tax_group = 'vertebrates'))
+
+motif_to_tf <- data.frame(
+  motif_id = names(pfm_info),
+  tf_name = sapply(pfm_info, function(x) x@name),
+  tf_symbol = sapply(pfm_info, function(x) {
+    name <- x@name
+    symbols <- regmatches(name, gregexpr("[A-Za-z0-9]+", name))[[1]]
+    if (length(symbols) > 0) symbols[1] else name
+  })
+)
+
+enriched.motifs.with.tf <- merge(enriched.motifs, motif_to_tf, 
+                                 by.x = "motif", by.y = "motif_id", 
+                                 all.x = TRUE)
+
+motif.positions <- Motifs(combined_high_conf)
+
+find_peaks_with_motifs <- function(peaks_gr, combined_high_conf, enriched_motifs, n_top = 10) {
+  top_motifs=enriched_motifs$motif[order(enriched_motifs$pvalue)]
+  result <- list()
+  
+  motif_data <- GetMotifData(combined_high_conf, assay = "ATAC", slot = "data")
+  motif_positions <- GetMotifData(combined_high_conf, assay = "ATAC", slot = "positions")
+  
+  all_peaks_gr <- StringToGRanges(rownames(combined_high_conf))
+  
+  for (motif_id in top_motifs) {
+    motif_col <- which(colnames(motif_data) == motif_id)
+    
+    if (length(motif_col) == 0) next
+    
+    motif_peaks <- which(motif_data[, motif_col] > 0)
+    
+    if (length(motif_peaks) > 0) {      motif_peaks_gr <- all_peaks_gr[motif_peaks]
+      
+      overlaps <- findOverlaps(peaks_gr, motif_peaks_gr)
+      
+      if (length(overlaps) > 0) {
+        peak_indices <- queryHits(overlaps)
+        
+        result[[motif_id]] <- list(
+          peaks = peaks_gr[peak_indices],
+          motif_name = enriched_motifs$tf_name[enriched_motifs$motif == motif_id],
+          motif_symbol = enriched_motifs$tf_symbol[enriched_motifs$motif == motif_id]
+        )
+      }
+    }
+  }
+  return(result)
+}
+
+motif_peak_association <- find_peaks_with_motifs(peaks_gr, combined_high_conf, enriched.motifs.with.tf)
+
+create_final_table <- function(motif_peak_association, anno_df) {
+  results <- data.frame()
+  
+  for (motif_id in names(motif_peak_association)) {
+    association <- motif_peak_association[[motif_id]]
+    
+    for (i in seq_along(association$peaks)) {
+      peak <- association$peaks[i]
+      peak_id <- paste0(seqnames(peak), "-", start(peak), "-", end(peak))
+      
+      peak_anno <- anno_df[anno_df$seqnames == as.character(seqnames(peak)) & 
+                             anno_df$start == start(peak) & 
+                             anno_df$end == end(peak), ]
+      
+      if (nrow(peak_anno) > 0) {
+        result_row <- data.frame(
+          peak_id = peak_id,
+          motif_id = motif_id,
+          tf_name = association$motif_name,
+          tf_symbol = association$motif_symbol,
+          gene_id = ifelse(!is.na(peak_anno$geneId[1]), peak_anno$geneId[1], NA),
+          gene_symbol = ifelse(!is.na(peak_anno$SYMBOL[1]), peak_anno$SYMBOL[1], NA),
+          distance_to_tss = ifelse(!is.na(peak_anno$distanceToTSS[1]), peak_anno$distanceToTSS[1], NA),
+          annotation = ifelse(!is.na(peak_anno$annotation[1]), peak_anno$annotation[1], NA)
+        )
+        results <- rbind(results, result_row)
+      }
+    }
+  }
+  return(results)
+}
+
+final_results <- create_final_table(motif_peak_association, anno_df)
+write.csv(final_results,"./motif_target_Genes.csv")
+
+
+
+
+
+
+library(igraph)
+library(ggraph)
+library(ggplot2)
+library(dplyr)
+library(scales)
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物/scATAC")
+final_results=read.csv("./motif_target_Genes.csv",row.names = 1)
+
+edges <- final_results %>%
+  count(tf_symbol, gene_symbol, name = "weight") %>%
+  rename(from = tf_symbol, to = gene_symbol) %>%
+  arrange(desc(weight))
+
+nodes <- data.frame(
+  name = unique(c(final_results$tf_symbol, final_results$gene_symbol)),
+  type = ifelse(unique(c(final_results$tf_symbol, final_results$gene_symbol)) %in% 
+                  final_results$tf_symbol, "TF", "Gene"),
+  special = ifelse(unique(c(final_results$tf_symbol, final_results$gene_symbol)) %in% 
+                     c("Foxo3", "Noct",final_results$tf_symbol[final_results$gene_symbol=="Noct"]), "Highlight", "Normal"),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    size = case_when(
+      type == "TF" ~ 5,
+      TRUE ~ 3
+    )
+  )
+
+g <- graph_from_data_frame(edges, directed = TRUE, vertices = nodes)
+
+tf_color <- "#1f77b4" 
+gene_color <- "#ff7f0e" 
+highlight_color <- "#d62728" 
+
+V(g)$color <- case_when(
+  V(g)$type == "TF" ~ tf_color,
+  TRUE ~ gene_color
+)
+
+V(g)$frame.color <- ifelse(V(g)$special == "Highlight", "#d62728", V(g)$color)
+V(g)$frame.width <- ifelse(V(g)$special == "Highlight", 1, 1)
+E(g)$width <- scales::rescale(edges$weight, to = c(0.5, 3))
+E(g)$color <- "gray80"
+E(g)$arrow.size <- 0.3
+
+set.seed(123)
+plot(g,
+     layout = layout_with_fr(g),
+     vertex.label = ifelse(V(g)$special == "Highlight", V(g)$name, NA), 
+     vertex.label.color = "black",
+     vertex.label.cex = 0.8,
+     vertex.label.font = 2, 
+     main = "TF-Gene Network (Foxo3 and Noct Highlighted)")
+
+legend("bottomright",
+       legend = c("Transcription Factor", "Gene", "Foxo3/Noct"),
+       pch = 21,
+       pt.bg = c(tf_color, gene_color, highlight_color),
+       pt.cex = c(1.5, 1.5, 2),
+       bty = "n",
+       cex = 0.8)
+
+p <- ggraph(g, layout = "kk") +
+  geom_edge_link(aes(width = weight, alpha = weight),
+                 color = "grey",
+                 arrow = arrow(length = unit(2, 'mm'), type = "closed")) +
+  geom_node_point(aes(color = type, size = size), alpha = 0.7,
+                  data = . %>% filter(special == "Normal")) +
+  geom_node_point(aes(fill = type,size = size),
+                  color = highlight_color,
+                  alpha=0.7,
+                  shape = 21, 
+                  stroke = 1.5, 
+                  data = . %>% filter(special == "Highlight"),show.legend = F) +
+  geom_node_label(aes(label = name, filter = special == "Highlight"),
+                  repel = TRUE,
+                  size = 3,
+                  fill = alpha("white", 0.8),
+                  label.size = 0.2) +
+  scale_edge_width(range = c(0.3, 1.5)) +
+  scale_edge_alpha(range = c(0.3, 0.8)) +
+  scale_color_manual(values = c("TF" = tf_color, "Gene" = gene_color)) +
+  scale_fill_manual(values = c("TF" = tf_color, "Gene" = gene_color)) +
+  scale_size_identity() +  
+  theme_void() +
+  labs(title = "Transcription Factor - Gene Regulatory Network",
+       color = "Node Type") +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom")
+
+
+ggsave("./network.pdf",p,units = "cm",width = 20,height = 20)
+```
