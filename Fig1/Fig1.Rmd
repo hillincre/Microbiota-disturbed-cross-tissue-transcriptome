@@ -5,11 +5,22 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
-(a) Gene expression level (RPKM) distribution of each sample.
+(b) Gene expression level (RPKM) distribution of each sample.
 ```{r setup, include=FALSE}
 rm (list=ls())
-setwd("")
-data=read.csv("./mRNA_rpkm_symbol.csv",row.names = 1)
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物")
+DATA=read.csv("./mRNA_rpkm_symbol.csv",row.names = 1)
+
+data=data.frame(c(1:nrow(DATA)))
+for (tissue in c("colon","liver","jejunum","heart","lung","kidney")){
+  temp_data=DATA[,c(grep(paste0(tissue,"GF"),names(DATA)),
+                    grep(paste0(tissue,"FMT"),names(DATA)),
+                    grep(paste0(tissue,"SPF"),names(DATA))
+  )]
+  data=cbind(data,temp_data)
+  }
+data=data[,-1]
+
 library(dplyr)
 library(tidyr)
 df=data %>%
@@ -19,30 +30,37 @@ df=pivot_longer(df,cols = names(df)[-55],names_to = "sample",values_to = "RPKM")
 df$tissue=""
 df$group=""
 for (tissue in c("colon","liver","jejunum","heart","lung","kidney")){
+  
   df$tissue[grep(tissue,df$sample)]=tissue
   df$group[grep(tissue,df$sample)]=gsub(tissue,"",df$sample[grep(tissue,df$sample)])
 }
 df$group=gsub("\\d+\\.*","",df$group)
+
+
+df$group=factor(df$group,levels = c("GF","FMT","SPF"))
+# df=df[order(df$group),]
+df$sample <- factor(df$sample, levels = names(data))
+df$tissue=factor(df$tissue,levels = c("colon","liver","jejunum","heart","lung","kidney"))
 
 library(ggplot2)
 p1=ggplot(df,aes(sample,log10(RPKM+1),fill=group))+
   stat_boxplot(geom="errorbar",width=0.3,position = position_dodge())+
   geom_boxplot(aes(fill=group),outliers = F,width = 0.5,outlier.color = "black",outlier.size = 0.3)+
   facet_wrap(facets = ~tissue,nrow = 1,scales = "free_x")+
-  scale_fill_manual(values = c("#4e62ab","#FF9850", "#d6404e"))+
+  scale_fill_manual(values = c("GF"="#4e62ab","FMT"="#FF9850","SPF"= "#d6404e"))+
   theme(panel.background = element_blank(), 
         text = element_text(size=8),
         axis.line = element_line(colour = "black"),
         axis.text.x = element_blank(),    
         strip.text = element_text(size = 10),
         legend.position = "right",legend.title=element_blank())
-
 p1
 ggsave("./rpkm_stasitic.pdf",units = "cm",width = 24,height = 4)
+
 ```
 
 
-(b) PCA of each tissue displayed distance between both three groups.
+(c) PCA of each tissue displayed distance between both three groups.
 ```{r setup,include=FALSE}
 library(DESeq2)
 library(ggplot2)
@@ -97,10 +115,10 @@ dev.off()
 ```
 
 
-(c)Heatmap of coding and non-coding mRNA relative expression level.
+(d)Heatmap of coding and non-coding mRNA relative expression level.
 ```{r setup,include=FALSE}
 rm(list = ls())
-setwd("")
+setwd("E:/博士2023-2025/课题/跨组织转录组-肠道微生物")
 data=read.csv("./mRNA_rpkm_symbol.csv",row.names = 1)
 group=read.csv("./group.csv",row.names = 1)
 group$group=factor(group$group,levels = c("GF","FMT","SPF"))
@@ -114,8 +132,7 @@ library(RColorBrewer)
 display.brewer.all()
 tis=brewer.pal(6, "Accent")
 names(tis)=unique(group$tissue)
-g=c("#4e62ab","#FF9850", "#d6404e")
-names(g)=unique(group$group)
+g=c("GF"="#4e62ab","FMT"="#FF9850", "SPF"="#d6404e")
 color=list(group=g,
            tissue=tis)
 library(pheatmap)
@@ -141,7 +158,7 @@ dev.off()
 ```
 
 # d & Fig S1 Screen DEGs and performed KEGG pathway enrichment.
-(d)Differentially expressed genes (DEGs) counts in each tissue.
+(e)Differentially expressed genes (DEGs) counts in each tissue.
 Fig S1. KEGG pathway enrichment of genes disturbed by gut microbes.
 ```{r setup,include=FALSE}
 rm(list = ls())
